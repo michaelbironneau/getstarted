@@ -1,0 +1,15 @@
+python:
+  install: ["requirements*.txt", "Pipfile", "pyproject.toml"]
+  build:   ["setup.py", "pyproject.toml", "Makefile"]
+  test:    ["pytest.ini", "setup.cfg", "tox.ini", "**/test_*.py", "**/*_test.py"]
+  run:     ["Procfile", "manage.py", "app.py", "main.py"]
+nodejs:
+  install: ["package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml"]
+  build:   ["package.json", "Makefile"]
+  test:    ["package.json", "jest.config.*", "vitest.config.*"]
+  run:     ["package.json", "server.js", "index.js"]
+go:
+  install: ["go.mod"]
+  build:   ["Makefile", "go.mod"]
+  test:    ["**/*_test.go"]
+  run:     ["main.go", "cmd/**/*.go"]
