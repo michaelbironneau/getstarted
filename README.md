@@ -97,83 +97,67 @@ These are going to do two things:
 2. Use tree-sitter to get a list of classes/methods/exports of each code file, add these to context with heading being the filename (full path to file). The way this works is that when the depth relative to `--dir` (or cwd if dir is unspecified) is less than `--depth`, we return classes/method signatures/exports for each filename. When depth is equal to `--depth`, we just return filenames. We don't go any deeper than `--depth`. If the calling process wants to dig deeper, they can call `getstarted` again on a subdirectory or increase `--depth`.
 
 
-## Assembly
+## Output
 
 All the context-gathering thus far occurs under branches like `build`, `test`, `docs` and `install` (based on the results of previous section). Group entries first by command, then by filename:
 
 The context starts with a brief stack summary based on go-entry output.
 
-An illustrative example (may contain innacuracies and inconsistencies), but should given an idea of the overall format:
+Here's an example run on the getstarted repo itself.
 
 ```
 ## Stack
 
 The repository is composed of:
-    * 96% Typescript
-    * 2% JSON
-    * 1% Dockerfile
-    * 1% CSS
-
+    * 100% Go
 
 ## Install
 
-### Source: package.json
+### Source: ./go.mod
 
-Run `npm install`.
-Dependencies:
-```
-...
-"nextjs": "~16.0.0",
-...
+Module: `github.com/michaelbironneau/getstarted`
+Go version: `1.25.5`
 
-```
+Run `go mod download` to install dependencies.
+
 ## Build
 
-Source: package.json
-Run `npm build`. 
+Run `go build ./...` to build all packages.
+
+### Source: ./go.mod
+
+Run `go build ./...` to build all packages.
 
 ## Run
 
-Source: package.json
-Run `npm run dev`.
+No relevant files found.
 
 ## Test
-Source: package.json
-Run `npm run tests`.
-Integration tests - run `npm run integration-tests`.
-E2E tests - run `npm run e2e`.
 
+Run `go test ./...` to run all tests.
 
 ## Docs
 
-Markdown files:
-    * Agents.md
-    * ./README.md
-    * ./app/api/API.md
+### Markdown files
+* ./README.md
 
-Contents of directory:
-* package.json
-* README.md
-* eslint.config.mjs
-* vitest.config.ts - `export default defineConfig`
-<... and so on ...>
+### Code structure
+(The symbols shown against some files below are not an exhaustive list)
 
-### ./app
+./.claude/settings.local.json
+./README.md
+./detect.go          [LangStats, DetectLanguages, readSample]
+./detect_test.go     [TestDetectLanguages, TestDetectLanguages_Python, TestDetectLanguages_Empty]
+./docs.go            [DirEntry, DocsResult, BuildDocs, buildDirTree, fileEntry, ...]
+./docs_test.go       [TestExtractSymbols_Go, TestExtractSymbols_Python, TestExtractSymbols_TypeScript, TestSingleChildCompression, TestFlattenFiles, ...]
+./finder.go          [heuristics, loadHeuristics, FindFiles, heuristicsKey]
+./finder_test.go     [TestLoadHeuristics, TestHeuristicsKey, TestFindFiles, TestFindFiles_NodeJS]
+./getstarted
+./go.mod
+./go.sum
+./heuristics.yaml
+./main.go            [main, parseFilter, isActive, printStack, displayPath, ...]
+./parsers.go         [ConfigParser, registerParser, FindParser, init, goModParser, ...]
+./parsers_test.go    [TestGoModParser, TestPackageJSONParser, TestRequirementsParser, TestPyprojectParser, TestPytestIniParser, ...]
 
-* components.json
-* instrumentation-client.ts - `export const onRouterTransitionStart`
-* instrumentation.ts - `export async function register(); export const onRequestError`
-* next.config.ts - `export default withSentryConfig`
-* postcss.config.mjs - `export default config`
-<... and so on ...>
-
-#### ./app/api
-
-* access-links/
-* access/sessions/
-* audit/
-* auth/[...all]
-<... and so on...>
 ```
-
-Note in the example above `--depth` is 2, and we shorten single-child paths such as `auth/[...all]` like the Github UI. If we'd run instead with `--depth` being equal to 1, then we would only have the contents of the current directory (with exports) and file/folder names of subdirectories.
