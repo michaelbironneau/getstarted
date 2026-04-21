@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -199,5 +200,6 @@ func formatSymbols(symbols []string) string {
 	if len(filteredSymbols) <= MaxSymbolsPerFile {
 		return "[" + strings.Join(filteredSymbols, ", ") + "]"
 	}
-	return "[" + strings.Join(filteredSymbols[:MaxSymbolsPerFile], ", ") + ", ...]"
+	hidden := "( + " + strconv.Itoa(len(filteredSymbols)-MaxSymbolsPerFile) + " hidden)"
+	return "[" + strings.Join(filteredSymbols[:MaxSymbolsPerFile], ", ") + ", ... " + hidden + "]"
 }

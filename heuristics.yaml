@@ -11,5 +11,5 @@ nodejs:
 go:
   install: ["go.mod"]
   build:   ["Makefile", "go.mod"]
-  test:    ["**/*_test.go"]
+  test:    ["go.mod", "**/*_test.go"]
   run:     ["main.go", "cmd/**/*.go"]

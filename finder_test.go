@@ -68,6 +68,9 @@ func TestFindFiles(t *testing.T) {
 	if len(files["test"]) == 0 {
 		t.Error("expected main_test.go in test files")
 	}
+	if !containsPath(files["test"], filepath.Join(dir, "go.mod")) {
+		t.Error("expected go.mod in test files")
+	}
 }
 
 func TestFindFiles_NodeJS(t *testing.T) {
@@ -86,4 +89,13 @@ func TestFindFiles_NodeJS(t *testing.T) {
 	if len(files["install"]) == 0 {
 		t.Error("expected package.json in install files for nodejs")
 	}
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, path := range paths {
+		if path == want {
+			return true
+		}
+	}
+	return false
 }
