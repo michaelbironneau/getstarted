@@ -1,10 +1,13 @@
 # Getstarted
 
-`getstarted` is a small CLI utility to orient LLMs quickly around codebases: where to find tests, how to build, etc. 
+This repo contains two complementary CLI utilities for LLM codebase orientation:
+
+- **`getstarted`** — breadth-first: where to find tests, how to build, what the stack is
+- **`godeeper`** — depth-first: drill into a specific file or symbol to understand its structure, callers, and dependencies
 
 ## Getting started
 
-To get started with `getstarted`, just `go install michaelbironneau/getstarted`. 
+To get started with `getstarted`, just `go install michaelbironneau/getstarted`.
 
 ## Command-line interface
 
@@ -22,6 +25,138 @@ An optional `--filter` flag allows the user to filter by a specific type of comm
 An optional `--dir` flag allows the user to restrict the searches to a subdirectory. This may result in some or all of the commands coming back blank (the parents will not be searched), unless the project contains multiple languages or is a monorepo, in which case it may be sensible to run `getstarted` in each subdirectory separately. It can be combined with `--filter=docs` so that you only return docs for a subfolder - sensible to keep context requirements lower. We will look at implementing monorepo/multi-language detection and splitting in the future. 
 
 An optional `--depth` flag allows the user to specify a max depth for the docs context. See Docs further down. Defaults to 2. Depth = 0 means the contents of `--dir`, Depth = 1 means its children, and so on.
+
+---
+
+# Godeeper
+
+`godeeper` is a depth-first companion to `getstarted`. Where `getstarted` gives you a broad map of a codebase, `godeeper` lets you zoom in on a specific symbol or file to understand its source, documentation, callers, and import relationships.
+
+## Usage
+
+```
+godeeper [--lines N] [--init] <target> [<target2> ...]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--lines N` | 80 | Truncate symbol source at N lines (0 = no limit) |
+| `--init` | — | Build a `.imports` cache in the current directory for faster lookups |
+
+### Modes
+
+**Symbol mode** — `godeeper <file>:<symbol>`
+
+Shows the symbol's full source, docstring, callers, and the blast radius of the file that contains it.
+
+**File mode** — `godeeper <file>`
+
+Lists all symbols in the file with one-line docstrings, what it imports, and what imports it.
+
+**Multi-file mode** — `godeeper <file1> <file2> ...`
+
+Shows the interface between the files: which symbols from each file are used in the other(s).
+
+**Init mode** — `godeeper --init`
+
+Walks the codebase and writes a `.imports` cache to the current directory. Subsequent runs use this cache to narrow caller searches instead of scanning the whole tree — useful for large codebases.
+
+## Sample output
+
+### Symbol mode: `godeeper pkg/docs.go:BuildDocs`
+
+```
+## Symbol: BuildDocs
+
+### Source: ./pkg/docs.go (lines 39-65)
+
+​```
+func BuildDocs(dir string, maxDepth int) (*DocsResult, error) {
+	result := &DocsResult{}
+
+	// Collect all markdown files (no depth limit)
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && skipDirs[d.Name()] {
+			return filepath.SkipDir
+		}
+		if !d.IsDir() && isMarkdown(d.Name()) {
+			rel, _ := filepath.Rel(dir, path)
+			result.MarkdownFiles = append(result.MarkdownFiles, "./"+rel)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	result.Root, err = buildDirTree(dir, dir, 0, maxDepth)
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+​```
+
+### Docstring
+
+// BuildDocs walks dir up to maxDepth, extracting markdown files and code symbols.
+
+### Called by
+
+- main (./cmd/getstarted/main.go:53)
+
+### Imported by
+
+- ./cmd/godeeper/main.go
+- ./cmd/getstarted/main.go
+```
+
+### File mode: `godeeper pkg/detect.go`
+
+```
+## File: ./pkg/detect.go
+
+### Symbols
+
+- LangStats (line 27)
+- DetectLanguages (line 33) — // DetectLanguages walks dir and returns language percentages sorted descending.
+- readSample (line 93)
+
+### Imports
+
+- io/fs
+- os
+- path/filepath
+- sort
+- github.com/go-enry/go-enry/v2
+
+### Imported by
+
+- ./cmd/godeeper/main.go
+- ./cmd/getstarted/main.go
+```
+
+### Multi-file mode: `godeeper pkg/docs.go cmd/getstarted/main.go`
+
+```
+## Interface: ./pkg/docs.go ↔ ./cmd/getstarted/main.go
+
+### Symbols from ./pkg/docs.go used in ./cmd/getstarted/main.go
+
+- BuildDocs
+- FlattenFiles
+```
+
+## Language support
+
+`godeeper` supports Go, Python, JavaScript, and TypeScript via tree-sitter.
+
+---
+
+# Getstarted
 
 ## Language Support
 
