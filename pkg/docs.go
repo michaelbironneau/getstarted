@@ -1,4 +1,4 @@
-package main
+package getstarted
 
 import (
 	"context"
@@ -17,16 +17,22 @@ import (
 
 // DirEntry represents a file or directory in the docs tree.
 type DirEntry struct {
-	Name      string
-	IsDir     bool
-	Symbols   []string // extracted symbols (non-dirs only)
-	Children  []*DirEntry
+	Name     string
+	IsDir    bool
+	Symbols  []string // extracted symbols (non-dirs only)
+	Children []*DirEntry
 }
 
 // DocsResult holds the results of the docs walk.
 type DocsResult struct {
 	MarkdownFiles []string
 	Root          *DirEntry
+}
+
+// FileEntry is a file path with its extracted symbols.
+type FileEntry struct {
+	Path    string
+	Symbols []string
 }
 
 // BuildDocs walks dir up to maxDepth, extracting markdown files and code symbols.
@@ -101,23 +107,18 @@ func buildDirTree(root, dir string, depth, maxDepth int) (*DirEntry, error) {
 	return node, nil
 }
 
-type fileEntry struct {
-	Path    string
-	Symbols []string
-}
-
-// flattenFiles walks the DirEntry tree and returns all files with full relative paths.
+// FlattenFiles walks the DirEntry tree and returns all files with full relative paths.
 // Dotfiles (names starting with ".") are excluded.
-func flattenFiles(entry *DirEntry) []fileEntry {
-	var result []fileEntry
+func FlattenFiles(entry *DirEntry) []FileEntry {
+	var result []FileEntry
 	for _, child := range entry.Children {
 		if child.IsDir {
-			result = append(result, flattenFiles(child)...)
+			result = append(result, FlattenFiles(child)...)
 		} else {
 			if strings.HasPrefix(child.Name, ".") {
 				continue
 			}
-			result = append(result, fileEntry{Path: entry.Name + "/" + child.Name, Symbols: child.Symbols})
+			result = append(result, FileEntry{Path: entry.Name + "/" + child.Name, Symbols: child.Symbols})
 		}
 	}
 	return result

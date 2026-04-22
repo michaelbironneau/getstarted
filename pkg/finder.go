@@ -1,4 +1,4 @@
-package main
+package getstarted
 
 import (
 	_ "embed"
@@ -9,7 +9,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-
 //go:embed heuristics.yaml
 var heuristicsYAML []byte
 
@@ -17,9 +16,9 @@ var heuristicsYAML []byte
 type heuristics map[string]map[string][]string
 
 var languageAliases = map[string]string{
-	"JavaScript":  "nodejs",
-	"TypeScript":  "nodejs",
-	"Vue":         "nodejs",
+	"JavaScript":   "nodejs",
+	"TypeScript":   "nodejs",
+	"Vue":          "nodejs",
 	"CoffeeScript": "nodejs",
 }
 

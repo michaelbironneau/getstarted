@@ -1,4 +1,4 @@
-package main
+package getstarted
 
 import (
 	"os"
@@ -170,7 +170,7 @@ func TestFlattenFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	files := flattenFiles(result.Root)
+	files := FlattenFiles(result.Root)
 
 	paths := map[string]bool{}
 	for _, f := range files {
