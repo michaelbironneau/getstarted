@@ -12,16 +12,30 @@ import (
 const sampleSize = 8192
 
 var skipDirs = map[string]bool{
-	".git":         true,
+	// version control
+	".git": true,
+	// Go
+	"vendor": true,
+	// Node.js / JS frameworks
 	"node_modules": true,
-	"vendor":       true,
-	".idea":        true,
-	".vscode":      true,
+	".next":        true,
+	".nuxt":        true,
+	".turbo":       true,
+	".svelte-kit":  true,
+	".cache":       true,
+	// Python
 	"__pycache__":  true,
 	".tox":         true,
 	".mypy_cache":  true,
-	"dist":         true,
-	"build":        true,
+	".pytest_cache": true,
+	"venv":         true,
+	".venv":        true,
+	"htmlcov":      true,
+	// generic build / IDE artifacts
+	"dist":  true,
+	"build": true,
+	".idea": true,
+	".vscode": true,
 }
 
 type LangStats struct {
