@@ -32,7 +32,8 @@ func ExtractSymbol(filePath, symbolName string) (*SymbolResult, error) {
 	if tsLang == nil {
 		return nil, fmt.Errorf("unsupported language: %s", lang)
 	}
-	query := symbolQuery(lang)
+	// Use fullSymbolQuery so an explicitly named symbol is found regardless of nesting.
+	query := fullSymbolQuery(lang)
 	if query == "" {
 		return nil, fmt.Errorf("no symbol query for language: %s", lang)
 	}
@@ -76,7 +77,10 @@ func ExtractSymbol(filePath, symbolName string) (*SymbolResult, error) {
 }
 
 // ExtractFileSymbols returns all symbols in a file, each with their source and docstring.
-func ExtractFileSymbols(filePath string) ([]SymbolResult, error) {
+// When includeLocalVars is false (the default), only top-level / module-level declarations
+// are returned. Set includeLocalVars to true to also include local variables, loop
+// counters, and nested function definitions.
+func ExtractFileSymbols(filePath string, includeLocalVars bool) ([]SymbolResult, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return nil, err
@@ -86,7 +90,11 @@ func ExtractFileSymbols(filePath string) ([]SymbolResult, error) {
 	if tsLang == nil {
 		return nil, nil
 	}
-	query := symbolQuery(lang)
+	qfn := symbolQuery
+	if includeLocalVars {
+		qfn = fullSymbolQuery
+	}
+	query := qfn(lang)
 	if query == "" {
 		return nil, nil
 	}

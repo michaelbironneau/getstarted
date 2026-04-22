@@ -72,7 +72,7 @@ func FindCallers(dir, targetFile, symbolName string, graph *ImportGraph) ([]Call
 // FindSymbolsUsedFrom returns symbols defined in fileB that are called in fileA.
 // Matching is by name — imprecise without a type system but good enough for orientation.
 func FindSymbolsUsedFrom(fileA, fileB string) ([]string, error) {
-	symbolsB, err := ExtractFileSymbols(fileB)
+	symbolsB, err := ExtractFileSymbols(fileB, true) // need all symbols for cross-file matching
 	if err != nil {
 		return nil, err
 	}

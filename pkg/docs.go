@@ -204,7 +204,60 @@ func treeSitterLang(lang string) *sitter.Language {
 	return nil
 }
 
+// symbolQuery returns a tree-sitter query that matches only top-level / module-level
+// declarations: exported functions, classes, types, and top-level const/let/var.
+// Local variables, loop counters, and nested function definitions are excluded.
 func symbolQuery(lang string) string {
+	switch lang {
+	case "Go":
+		// Go function/method declarations can only appear at the top level.
+		// Type declarations are anchored to source_file to exclude rare
+		// types declared inside function bodies.
+		return `[
+			(function_declaration name: (identifier) @name)
+			(method_declaration name: (field_identifier) @name)
+			(source_file (type_declaration (type_spec name: (type_identifier) @name)))
+		]`
+	case "Python":
+		// Anchor to module root; also match decorated definitions.
+		return `[
+			(module (function_definition name: (identifier) @name))
+			(module (class_definition name: (identifier) @name))
+			(module (decorated_definition (function_definition name: (identifier) @name)))
+			(module (decorated_definition (class_definition name: (identifier) @name)))
+		]`
+	case "JavaScript", "JSX":
+		// Anchor lexical_declaration to program (top-level) or export_statement
+		// (which is always top-level) to exclude local variables and loop counters.
+		return `[
+			(program (function_declaration name: (identifier) @name))
+			(program (class_declaration name: (identifier) @name))
+			(program (lexical_declaration (variable_declarator name: (identifier) @name)))
+			(export_statement (function_declaration name: (identifier) @name))
+			(export_statement (class_declaration name: (identifier) @name))
+			(export_statement (lexical_declaration (variable_declarator name: (identifier) @name)))
+		]`
+	case "TypeScript", "TSX":
+		return `[
+			(program (function_declaration name: (identifier) @name))
+			(program (class_declaration name: (type_identifier) @name))
+			(program (lexical_declaration (variable_declarator name: (identifier) @name)))
+			(program (interface_declaration name: (type_identifier) @name))
+			(program (type_alias_declaration name: (type_identifier) @name))
+			(export_statement (function_declaration name: (identifier) @name))
+			(export_statement (class_declaration name: (type_identifier) @name))
+			(export_statement (lexical_declaration (variable_declarator name: (identifier) @name)))
+			(export_statement (interface_declaration name: (type_identifier) @name))
+			(export_statement (type_alias_declaration name: (type_identifier) @name))
+		]`
+	}
+	return ""
+}
+
+// fullSymbolQuery returns a tree-sitter query that matches all symbol declarations
+// in a file, including local variables, loop counters, and nested functions.
+// Used when --include-local-vars is set, or when searching for a specific named symbol.
+func fullSymbolQuery(lang string) string {
 	switch lang {
 	case "Go":
 		return `[

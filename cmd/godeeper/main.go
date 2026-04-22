@@ -13,8 +13,10 @@ import (
 const maxImportSymbols = 7
 
 func main() {
+	reorderArgs()
 	lines := flag.Int("lines", 80, "max source lines to display per symbol (0 = unlimited)")
 	doInit := flag.Bool("init", false, "build .imports cache in the current directory and exit")
+	includeLocalVars := flag.Bool("include-local-vars", false, "include local variables, loop counters, and nested functions in symbol lists")
 	flag.Parse()
 
 	if *doInit {
@@ -32,12 +34,12 @@ func main() {
 		target := args[0]
 		// Detect symbol mode: last colon that isn't part of a drive letter (e.g. C:\)
 		if idx := strings.LastIndex(target, ":"); idx > 1 {
-			runSymbolMode(target[:idx], target[idx+1:], *lines)
+			runSymbolMode(target[:idx], target[idx+1:], *lines, *includeLocalVars)
 		} else {
-			runFileMode(target)
+			runFileMode(target, *includeLocalVars)
 		}
 	} else {
-		runMultiFileMode(args)
+		runMultiFileMode(args, *includeLocalVars)
 	}
 }
 
@@ -55,10 +57,13 @@ func runInit() {
 	fmt.Printf("Import graph saved to .imports (%d files indexed)\n", len(graph.Files))
 }
 
-func runSymbolMode(filePath, symbolName string, maxLines int) {
+func runSymbolMode(filePath, symbolName string, maxLines int, includeLocalVars bool) {
 	abs, err := filepath.Abs(filePath)
 	if err != nil {
 		fatalf("error resolving path: %v\n", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		fatalf("error: file not found: %s\n", filePath)
 	}
 
 	result, err := getstarted.ExtractSymbol(abs, symbolName)
@@ -108,10 +113,13 @@ func runSymbolMode(filePath, symbolName string, maxLines int) {
 	fmt.Print(out.String())
 }
 
-func runFileMode(filePath string) {
+func runFileMode(filePath string, includeLocalVars bool) {
 	abs, err := filepath.Abs(filePath)
 	if err != nil {
 		fatalf("error resolving path: %v\n", err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		fatalf("error: file not found: %s\n", filePath)
 	}
 
 	cwd, _ := os.Getwd()
@@ -120,7 +128,7 @@ func runFileMode(filePath string) {
 	out := &strings.Builder{}
 	fmt.Fprintf(out, "## File: %s\n\n", relPath)
 
-	symbols, _ := getstarted.ExtractFileSymbols(abs)
+	symbols, _ := getstarted.ExtractFileSymbols(abs, includeLocalVars)
 	if len(symbols) > 0 {
 		out.WriteString("### Symbols\n\n")
 		for _, s := range symbols {
@@ -157,7 +165,7 @@ func runFileMode(filePath string) {
 	fmt.Print(out.String())
 }
 
-func runMultiFileMode(filePaths []string) {
+func runMultiFileMode(filePaths []string, includeLocalVars bool) {
 	cwd, _ := os.Getwd()
 
 	// Resolve all paths
@@ -173,7 +181,7 @@ func runMultiFileMode(filePaths []string) {
 			continue
 		}
 		rel := toRel(cwd, abs)
-		symbols, _ := getstarted.ExtractFileSymbols(abs)
+		symbols, _ := getstarted.ExtractFileSymbols(abs, includeLocalVars)
 		files = append(files, fileInfo{rel: rel, abs: abs, symbols: symbols})
 	}
 
@@ -323,4 +331,35 @@ func firstLine(s string) string {
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, format, args...)
 	os.Exit(1)
+}
+
+// reorderArgs moves flag arguments (starting with "-") before positional
+// arguments so that flags can appear anywhere on the command line.
+// The standard flag package stops parsing at the first non-flag argument,
+// so without this reordering, flags placed after file paths are treated as
+// additional file path arguments.
+func reorderArgs() {
+	// Flags that take a separate value argument (not --flag=value form).
+	valueFlags := map[string]bool{"lines": true}
+
+	var flagArgs, posArgs []string
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if !strings.HasPrefix(arg, "-") {
+			posArgs = append(posArgs, arg)
+			continue
+		}
+		name := strings.TrimLeft(arg, "-")
+		if idx := strings.Index(name, "="); idx >= 0 {
+			name = name[:idx] // --flag=value: self-contained
+		} else if valueFlags[name] && i+1 < len(args) {
+			// --flag value: consume the next token as the value
+			flagArgs = append(flagArgs, arg, args[i+1])
+			i++
+			continue
+		}
+		flagArgs = append(flagArgs, arg)
+	}
+	os.Args = append(os.Args[:1], append(flagArgs, posArgs...)...)
 }

@@ -65,7 +65,7 @@ def standalone_func():
 	for _, s := range symbols {
 		found[s] = true
 	}
-	for _, want := range []string{"MyClass", "method", "standalone_func"} {
+	for _, want := range []string{"MyClass", "standalone_func"} {
 		if !found[want] {
 			t.Errorf("expected symbol %q, got %v", want, symbols)
 		}
