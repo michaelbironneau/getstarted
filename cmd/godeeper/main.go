@@ -10,6 +10,8 @@ import (
 	getstarted "github.com/michaelbironneau/getstarted/pkg"
 )
 
+const maxImportSymbols = 7
+
 func main() {
 	lines := flag.Int("lines", 80, "max source lines to display per symbol (0 = unlimited)")
 	doInit := flag.Bool("init", false, "build .imports cache in the current directory and exit")
@@ -134,8 +136,10 @@ func runFileMode(filePath string) {
 	imports, _ := getstarted.ExtractImports(abs)
 	if len(imports) > 0 {
 		out.WriteString("### Imports\n\n")
+		sourceDir := filepath.Dir(abs)
 		for _, imp := range imports {
-			fmt.Fprintf(out, "- %s\n", imp.RawPath)
+			displayPath := resolveRelativeImport(sourceDir, imp.RawPath, cwd)
+			fmt.Fprintf(out, "- %s%s\n", displayPath, formatImportSymbols(imp.Symbols))
 		}
 		out.WriteString("\n")
 	}
@@ -246,6 +250,59 @@ func toRel(root, abs string) string {
 	return "./" + filepath.ToSlash(rel)
 }
 
+// jsExtensions is the ordered list of extensions tried when resolving an
+// extension-less relative import in JS/TS projects.
+var jsExtensions = []string{".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"}
+
+// resolveRelativeImport rewrites a relative import path (starting with ".")
+// so it is expressed relative to cwd rather than the source file's directory.
+// It also tries to find the actual file on disk by probing common extensions
+// and index files when the bare path doesn't exist.
+// Non-relative paths (package names, bare module specifiers) are returned as-is.
+func resolveRelativeImport(sourceDir, importPath, cwd string) string {
+	if !strings.HasPrefix(importPath, ".") {
+		return importPath
+	}
+	abs := filepath.Join(sourceDir, filepath.FromSlash(importPath))
+	abs = resolveExtension(abs)
+	rel, err := filepath.Rel(cwd, abs)
+	if err != nil {
+		return importPath
+	}
+	return "./" + filepath.ToSlash(rel)
+}
+
+// resolveExtension finds the actual file for an extension-less path by trying
+// common JS/TS extensions and directory index files. Returns absPath unchanged
+// if no match is found.
+func resolveExtension(absPath string) string {
+	if _, err := os.Stat(absPath); err == nil {
+		return absPath // already a real path (e.g. already has extension)
+	}
+	for _, ext := range jsExtensions {
+		if _, err := os.Stat(absPath + ext); err == nil {
+			return absPath + ext
+		}
+	}
+	for _, ext := range jsExtensions {
+		if _, err := os.Stat(filepath.Join(absPath, "index"+ext)); err == nil {
+			return filepath.Join(absPath, "index"+ext)
+		}
+	}
+	return absPath
+}
+
+func formatImportSymbols(symbols []string) string {
+	if len(symbols) == 0 {
+		return ""
+	}
+	if len(symbols) <= maxImportSymbols {
+		return " [" + strings.Join(symbols, ", ") + "]"
+	}
+	more := len(symbols) - maxImportSymbols
+	return " [" + strings.Join(symbols[:maxImportSymbols], ", ") + fmt.Sprintf(", ... (+%d more)", more) + "]"
+}
+
 func truncateLines(s string, max int) string {
 	lines := strings.Split(s, "\n")
 	if len(lines) <= max {
@@ -256,7 +313,7 @@ func truncateLines(s string, max int) string {
 }
 
 func firstLine(s string) string {
-	s = strings.TrimSpace(strings.Trim(s, `"'` + "`"))
+	s = strings.TrimSpace(strings.Trim(s, `"'`+"`"))
 	if idx := strings.Index(s, "\n"); idx >= 0 {
 		return s[:idx]
 	}

@@ -14,9 +14,10 @@ import (
 
 const importsFile = ".imports"
 
-// Import represents a single import statement in a file.
+// Import represents a single import in a file, with the symbols used from it.
 type Import struct {
 	RawPath string
+	Symbols []string // symbols referenced from this import within the file
 }
 
 // ImportGraph maps files (relative to root) to their raw import paths.
@@ -29,7 +30,14 @@ type importGraphFile struct {
 	Files   map[string][]string `json:"files"`
 }
 
-// ExtractImports parses a file and returns its imports.
+// importEntry is an internal working struct used while extracting imports.
+type importEntry struct {
+	rawPath   string
+	localName string // how this package is referenced in code
+	symbols   []string
+}
+
+// ExtractImports parses a file and returns its imports with the symbols used from each.
 func ExtractImports(filePath string) ([]Import, error) {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
@@ -40,10 +48,6 @@ func ExtractImports(filePath string) ([]Import, error) {
 	if tsLang == nil {
 		return nil, nil
 	}
-	query := importQuery(lang)
-	if query == "" {
-		return nil, nil
-	}
 
 	parser := sitter.NewParser()
 	parser.SetLanguage(tsLang)
@@ -52,47 +56,377 @@ func ExtractImports(filePath string) ([]Import, error) {
 		return nil, nil
 	}
 
-	q, err := sitter.NewQuery([]byte(query), tsLang)
-	if err != nil {
-		return nil, nil
+	var entries []*importEntry
+	switch lang {
+	case "Go":
+		entries = extractGoImports(tree.RootNode(), content, tsLang)
+	case "Python":
+		entries = extractPythonImports(tree.RootNode(), content, tsLang)
+	case "JavaScript", "JSX", "TypeScript", "TSX":
+		entries = extractJSImports(tree.RootNode(), content, tsLang)
 	}
 
-	cursor := sitter.NewQueryCursor()
-	cursor.Exec(q, tree.RootNode())
+	result := make([]Import, 0, len(entries))
+	for _, e := range entries {
+		result = append(result, Import{RawPath: e.rawPath, Symbols: e.symbols})
+	}
+	return result, nil
+}
 
-	seen := make(map[string]bool)
-	var imports []Import
+// extractGoImports walks import_spec nodes then scans selector_expressions to
+// find which symbols each package contributes.
+func extractGoImports(root *sitter.Node, src []byte, lang *sitter.Language) []*importEntry {
+	var entries []*importEntry
+	localToEntry := make(map[string]*importEntry)
+
+	var walkImports func(*sitter.Node)
+	walkImports = func(n *sitter.Node) {
+		if n.Type() == "import_spec" {
+			e := &importEntry{}
+			for i := 0; i < int(n.NamedChildCount()); i++ {
+				child := n.NamedChild(i)
+				switch child.Type() {
+				case "package_identifier":
+					e.localName = child.Content(src)
+				case "interpreted_string_literal":
+					e.rawPath = strings.Trim(child.Content(src), `"`)
+				}
+			}
+			if e.rawPath == "" || e.localName == "_" || e.localName == "." {
+				return
+			}
+			if e.localName == "" {
+				e.localName = goLocalName(e.rawPath)
+			}
+			entries = append(entries, e)
+			localToEntry[e.localName] = e
+			return
+		}
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walkImports(n.Child(i))
+		}
+	}
+	walkImports(root)
+
+	if len(localToEntry) == 0 {
+		return entries
+	}
+
+	// Captures are returned in source order: package (@pkg) before symbol (@sym).
+	// Two patterns: value selector (pkg.Func()) and qualified type (pkg.Type).
+	q, err := sitter.NewQuery([]byte(`
+		[
+		  (selector_expression
+		    operand: (identifier) @pkg
+		    field: (field_identifier) @sym)
+		  (qualified_type
+		    package: (package_identifier) @pkg
+		    name: (type_identifier) @sym)
+		]
+	`), lang)
+	if err != nil {
+		return entries
+	}
+	cursor := sitter.NewQueryCursor()
+	cursor.Exec(q, root)
 	for {
 		match, ok := cursor.NextMatch()
 		if !ok {
 			break
 		}
-		for _, cap := range match.Captures {
-			raw := cap.Node.Content(content)
-			raw = strings.Trim(raw, `"'` + "`")
-			if raw == "" || seen[raw] {
-				continue
-			}
-			seen[raw] = true
-			imports = append(imports, Import{RawPath: raw})
+		if len(match.Captures) != 2 {
+			continue
+		}
+		pkg := match.Captures[0].Node.Content(src)
+		sym := match.Captures[1].Node.Content(src)
+		if e, ok := localToEntry[pkg]; ok {
+			e.symbols = appendUniq(e.symbols, sym)
 		}
 	}
-	return imports, nil
+	return entries
 }
 
-func importQuery(lang string) string {
-	switch lang {
-	case "Go":
-		return `(import_spec path: (interpreted_string_literal) @path)`
-	case "Python":
-		return `[
-			(import_statement name: (dotted_name) @path)
-			(import_from_statement module_name: (dotted_name) @path)
-		]`
-	case "JavaScript", "JSX", "TypeScript", "TSX":
-		return `(import_statement source: (string) @path)`
+// extractPythonImports handles both `import X` (qualified usage) and
+// `from X import a, b` (explicit named imports).
+func extractPythonImports(root *sitter.Node, src []byte, lang *sitter.Language) []*importEntry {
+	var entries []*importEntry
+	localToEntry := make(map[string]*importEntry) // only for `import X` style
+	seen := make(map[string]bool)
+
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		switch n.Type() {
+		case "import_statement":
+			for i := 0; i < int(n.NamedChildCount()); i++ {
+				child := n.NamedChild(i)
+				switch child.Type() {
+				case "dotted_name":
+					path := child.Content(src)
+					if !seen[path] {
+						seen[path] = true
+						e := &importEntry{rawPath: path, localName: lastDotSegment(path)}
+						entries = append(entries, e)
+						localToEntry[e.localName] = e
+					}
+				case "aliased_import":
+					// import X as Y
+					var path, alias string
+					for j := 0; j < int(child.NamedChildCount()); j++ {
+						gc := child.NamedChild(j)
+						switch gc.Type() {
+						case "dotted_name":
+							path = gc.Content(src)
+						case "identifier":
+							alias = gc.Content(src)
+						}
+					}
+					if path != "" && !seen[path] {
+						seen[path] = true
+						localName := alias
+						if localName == "" {
+							localName = lastDotSegment(path)
+						}
+						e := &importEntry{rawPath: path, localName: localName}
+						entries = append(entries, e)
+						localToEntry[localName] = e
+					}
+				}
+			}
+			return
+
+		case "import_from_statement":
+			// from X import a, b  OR  from X import (a, b)
+			if n.NamedChildCount() == 0 {
+				return
+			}
+			// First named child is always the module (dotted_name or relative_import).
+			moduleNode := n.NamedChild(0)
+			modulePath := moduleNode.Content(src)
+			if seen[modulePath] {
+				return
+			}
+			seen[modulePath] = true
+
+			var namedSymbols []string
+			for i := 1; i < int(n.NamedChildCount()); i++ {
+				child := n.NamedChild(i)
+				switch child.Type() {
+				case "dotted_name":
+					namedSymbols = append(namedSymbols, child.Content(src))
+				case "import_list":
+					for j := 0; j < int(child.NamedChildCount()); j++ {
+						gc := child.NamedChild(j)
+						switch gc.Type() {
+						case "dotted_name":
+							namedSymbols = append(namedSymbols, gc.Content(src))
+						case "aliased_import":
+							// from X import a as b — report the module-side name (a)
+							if gc.NamedChildCount() > 0 {
+								if first := gc.NamedChild(0); first.Type() == "dotted_name" {
+									namedSymbols = append(namedSymbols, first.Content(src))
+								}
+							}
+						}
+					}
+				case "wildcard_import":
+					namedSymbols = append(namedSymbols, "*")
+				case "aliased_import":
+					if child.NamedChildCount() > 0 {
+						if first := child.NamedChild(0); first.Type() == "dotted_name" {
+							namedSymbols = append(namedSymbols, first.Content(src))
+						}
+					}
+				}
+			}
+
+			e := &importEntry{
+				rawPath:   modulePath,
+				localName: lastDotSegment(modulePath),
+				symbols:   namedSymbols,
+			}
+			entries = append(entries, e)
+			// Don't add to localToEntry: named imports don't need attribute scanning.
+			return
+		}
+
+		for i := 0; i < int(n.ChildCount()); i++ {
+			walk(n.Child(i))
+		}
 	}
-	return ""
+	walk(root)
+
+	// For `import X` style, scan attribute access to find X.foo() usages.
+	if len(localToEntry) == 0 {
+		return entries
+	}
+	// Captures: object (@obj) before attribute (@attr) in source order.
+	q, err := sitter.NewQuery([]byte(`
+		(attribute
+		  object: (identifier) @obj
+		  attribute: (identifier) @attr)
+	`), lang)
+	if err != nil {
+		return entries
+	}
+	cursor := sitter.NewQueryCursor()
+	cursor.Exec(q, root)
+	for {
+		match, ok := cursor.NextMatch()
+		if !ok {
+			break
+		}
+		if len(match.Captures) != 2 {
+			continue
+		}
+		obj := match.Captures[0].Node.Content(src)
+		attr := match.Captures[1].Node.Content(src)
+		if e, ok := localToEntry[obj]; ok {
+			e.symbols = appendUniq(e.symbols, attr)
+		}
+	}
+	return entries
+}
+
+// extractJSImports handles named imports ({a, b}), default imports, and
+// namespace imports (* as X), scanning member_expressions for the latter two.
+func extractJSImports(root *sitter.Node, src []byte, lang *sitter.Language) []*importEntry {
+	var entries []*importEntry
+	localToEntry := make(map[string]*importEntry)
+	seen := make(map[string]bool)
+
+	var walk func(*sitter.Node)
+	walk = func(n *sitter.Node) {
+		if n.Type() != "import_statement" {
+			for i := 0; i < int(n.ChildCount()); i++ {
+				walk(n.Child(i))
+			}
+			return
+		}
+
+		var rawPath string
+		var importClause *sitter.Node
+		for i := 0; i < int(n.NamedChildCount()); i++ {
+			child := n.NamedChild(i)
+			switch child.Type() {
+			case "string":
+				rawPath = strings.Trim(child.Content(src), `"'`+"`")
+			case "import_clause":
+				importClause = child
+			}
+		}
+		if rawPath == "" || seen[rawPath] {
+			return
+		}
+		seen[rawPath] = true
+		e := &importEntry{rawPath: rawPath}
+		entries = append(entries, e)
+
+		if importClause == nil {
+			return // side-effect import
+		}
+
+		for i := 0; i < int(importClause.NamedChildCount()); i++ {
+			child := importClause.NamedChild(i)
+			switch child.Type() {
+			case "identifier":
+				// Default import: import X from 'Y'
+				e.localName = child.Content(src)
+				localToEntry[e.localName] = e
+
+			case "named_imports":
+				// import { a, b as c } from 'Y'
+				for j := 0; j < int(child.NamedChildCount()); j++ {
+					spec := child.NamedChild(j)
+					if spec.Type() == "import_specifier" && spec.NamedChildCount() > 0 {
+						// First named child is the exported name from the module.
+						if nameNode := spec.NamedChild(0); nameNode.Type() == "identifier" {
+							e.symbols = append(e.symbols, nameNode.Content(src))
+						}
+					}
+				}
+
+			case "namespace_import":
+				// import * as X from 'Y'
+				for j := 0; j < int(child.NamedChildCount()); j++ {
+					if gc := child.NamedChild(j); gc.Type() == "identifier" {
+						e.localName = gc.Content(src)
+						localToEntry[e.localName] = e
+						break
+					}
+				}
+			}
+		}
+	}
+	walk(root)
+
+	// Scan member_expressions for default/namespace imports (X.foo).
+	if len(localToEntry) == 0 {
+		return entries
+	}
+	// Captures: object (@obj) before property (@prop) in source order.
+	q, err := sitter.NewQuery([]byte(`
+		(member_expression
+		  object: (identifier) @obj
+		  property: (property_identifier) @prop)
+	`), lang)
+	if err != nil {
+		return entries
+	}
+	cursor := sitter.NewQueryCursor()
+	cursor.Exec(q, root)
+	for {
+		match, ok := cursor.NextMatch()
+		if !ok {
+			break
+		}
+		if len(match.Captures) != 2 {
+			continue
+		}
+		obj := match.Captures[0].Node.Content(src)
+		prop := match.Captures[1].Node.Content(src)
+		if e, ok := localToEntry[obj]; ok {
+			e.symbols = appendUniq(e.symbols, prop)
+		}
+	}
+	return entries
+}
+
+// goLocalName returns the local package identifier for a Go import path.
+// It strips common version suffixes (/v2, /v3, etc.) and falls back to the
+// penultimate segment, which is usually the real package name.
+func goLocalName(importPath string) string {
+	parts := strings.Split(importPath, "/")
+	last := parts[len(parts)-1]
+	if len(parts) >= 2 && len(last) >= 2 && last[0] == 'v' {
+		allDigits := true
+		for _, c := range last[1:] {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits {
+			return parts[len(parts)-2]
+		}
+	}
+	return last
+}
+
+// lastDotSegment returns the last component of a dotted path (e.g. "os.path" → "path").
+func lastDotSegment(s string) string {
+	if idx := strings.LastIndex(s, "."); idx >= 0 {
+		return s[idx+1:]
+	}
+	return s
+}
+
+func appendUniq(slice []string, s string) []string {
+	for _, existing := range slice {
+		if existing == s {
+			return slice
+		}
+	}
+	return append(slice, s)
 }
 
 // BuildImportGraph walks dir and builds the full import graph.
@@ -152,12 +486,10 @@ func SaveImportGraph(dir string, g *ImportGraph) error {
 // Matching is best-effort: it checks if any import path contains a path component
 // from the target file's directory or base name.
 func (g *ImportGraph) Importers(filePath string) []string {
-	// Normalise: strip leading "./" and get components
 	clean := filepath.ToSlash(strings.TrimPrefix(filePath, "./"))
 	dir := filepath.Dir(clean)
 	base := strings.TrimSuffix(filepath.Base(clean), filepath.Ext(clean))
 
-	// Build match tokens: the directory (last segment) and the file base name
 	var tokens []string
 	if dir != "." {
 		tokens = append(tokens, "/"+filepath.Base(dir))
