@@ -483,18 +483,38 @@ func SaveImportGraph(dir string, g *ImportGraph) error {
 }
 
 // Importers returns file paths (from the graph) that likely import the given file.
-// Matching is best-effort: it checks if any import path contains a path component
-// from the target file's directory or base name.
+//
+// Matching strategy differs by file type:
+//   - Go files (.go): package-level matching — the import path need only end with
+//     the package directory name (e.g. "/pkg"), because all files in a package
+//     share a single import path.
+//   - All other files (TS/JS/etc.): file-level matching — the import path must
+//     end with "parentDir/base" (e.g. "helpers/mssql"), combining two path
+//     components to avoid false positives from shared directory names like
+//     "helpers" or "utils" appearing in unrelated import paths.
 func (g *ImportGraph) Importers(filePath string) []string {
 	clean := filepath.ToSlash(strings.TrimPrefix(filePath, "./"))
+	ext := filepath.Ext(clean)
 	dir := filepath.Dir(clean)
-	base := strings.TrimSuffix(filepath.Base(clean), filepath.Ext(clean))
+	base := strings.TrimSuffix(filepath.Base(clean), ext)
 
-	var tokens []string
-	if dir != "." {
-		tokens = append(tokens, "/"+filepath.Base(dir))
+	var token string
+	if ext == ".go" {
+		// Package-level: the directory name is the import identifier.
+		if dir == "." {
+			token = base
+		} else {
+			token = "/" + filepath.Base(dir)
+		}
+	} else {
+		// File-level: combine parent directory + base so that a shared directory
+		// name alone (e.g. "/helpers") cannot produce a false match.
+		if dir == "." {
+			token = "/" + base
+		} else {
+			token = filepath.Base(dir) + "/" + base
+		}
 	}
-	tokens = append(tokens, base)
 
 	seen := make(map[string]bool)
 	var result []string
@@ -503,14 +523,9 @@ func (g *ImportGraph) Importers(filePath string) []string {
 			continue
 		}
 		for _, imp := range imports {
-			for _, tok := range tokens {
-				if strings.HasSuffix(imp, tok) || strings.Contains(imp, tok+"/") {
-					seen[file] = true
-					result = append(result, file)
-					break
-				}
-			}
-			if seen[file] {
+			if strings.HasSuffix(imp, token) || strings.Contains(imp, "/"+token+"/") {
+				seen[file] = true
+				result = append(result, file)
 				break
 			}
 		}
